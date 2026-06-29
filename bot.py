@@ -15,7 +15,7 @@ MARKET = os.getenv("TRADING_MARKET", "QQQ-VOL-PERP")
 
 # 1. ლოკალური BLS გასაღების წაკითხვა Railway-დან
 # გასაღები უნდა იყოს 32-ბაიტიანი (64 სიმბოლოიანი hex სტრინგი)
-HEX_SECRET_KEY = os.getenv("4c617465737443686961424c534b65795365637265744b657931323334353637")
+HEX_SECRET_KEY = os.getenv("BLS_SECRET_KEY")
 
 # სესიის გლობალური ცვლადები
 session_token = None
