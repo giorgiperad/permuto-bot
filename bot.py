@@ -2,9 +2,10 @@ import os
 import time
 import requests
 import logging
+import hashlib
 from py_ecc.bls import G2ProofOfPossession as bls
 
-# ლოგირების გამართვა Railway კონსოლისთვის
+# ლოგირების გამართვა
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - [%(levelname)s] - %(message)s'
@@ -12,35 +13,41 @@ logging.basicConfig(
 
 API_URL = "https://perps.permuto.capital"
 MARKET = os.getenv("TRADING_MARKET", "QQQ-VOL-PERP")
-
-# 1. ლოკალური BLS გასაღების წაკითხვა Railway-დან
-# გასაღები უნდა იყოს 32-ბაიტიანი (64 სიმბოლოიანი hex სტრინგი)
 HEX_SECRET_KEY = os.getenv("BLS_SECRET_KEY")
 
-# სესიის გლობალური ცვლადები
+# Chia-ს ოფიციალური DST პრეფიქსი AugSchemeMPL ხელმოწერებისთვის
+CHIA_AUG_SCHEME_DST = b"BLS_SIG_AUG___________"
+
 session_token = None
 trading_user_id = None
 last_auth_time = 0
 
 def get_bls_public_key():
-    """აგენერირებს 96-ბაიტიან (192 სიმბოლო hex) საჯარო გასაღებს საიდუმლოდან"""
+    """აგენერირებს 96-ბაიტიან საჯარო გასაღებს"""
     sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
     sk = int.from_bytes(sk_bytes, "big")
     pk = bls.SkToPk(sk)
     return pk.hex()
 
-def sign_challenge_nonce(nonce_hex):
-    """ხელს აწერს სერვერიდან მიღებულ nonce-ს Chia-ს სტანდარტის (AugSchemeMPL) მიხედვით"""
+def sign_challenge_nonce(nonce_hex, pubkey_hex):
+    """
+    ხელს აწერს nonce-ს Chia AugSchemeMPL-ის ზუსტი წესით:
+    Signature = Sign(sk, pk_bytes + msg_bytes)
+    """
     sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
     sk = int.from_bytes(sk_bytes, "big")
+    
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
     msg_bytes = bytes.fromhex(nonce_hex)
     
-    # Chia-ს სპეციფიკაციით, ხელმოწერისთვის გამოიყენება ცარიელი (empty) DST ბაიტები
-    signature = bls.Sign(sk, msg_bytes)
+    # AugSchemeMPL-ის მიხედვით, შეტყობინებას წინ ემატება საჯარო გასაღები
+    augmented_msg = pubkey_bytes + msg_bytes
+    
+    # py_ecc-ს გადავცემთ შეტყობინებას და Chia-ს სპეციფიკურ DST-ს
+    signature = bls.Sign(sk, augmented_msg, CHIA_AUG_SCHEME_DST)
     return signature.hex()
 
 def authenticate_bot():
-    """მარკეტ მეიქერის ავტორიზაციის სრული ციკლი"""
     global session_token, trading_user_id, last_auth_time
     
     if not HEX_SECRET_KEY:
@@ -49,9 +56,9 @@ def authenticate_bot():
 
     try:
         pubkey = get_bls_public_key()
-        logging.info(f"ავტორიზაციის დაწყება საჯარო გასაღებით: {pubkey[:10]}...")
+        logging.info(f"ავტორიზაციის მცდელობა საჯარო გასაღებით: {pubkey[:15]}...")
 
-        # ნაბიჯი 1: Challenge მოთხოვნა
+        # ნაბიჯი 1: Challenge
         challenge_url = f"{API_URL}/exchange/wallet_link_challenge"
         payload = {
             "wallet_pubkey": pubkey,
@@ -68,10 +75,10 @@ def authenticate_bot():
         challenge_token = challenge_data["challenge_token"]
         nonce = challenge_data["nonce"]
 
-        # ნაბიჯი 2: ლოკალური ხელმოწერა
-        signature = sign_challenge_nonce(nonce)
+        # ნაბიჯი 2: სწორი Chia-ს ხელმოწერა
+        signature = sign_challenge_nonce(nonce, pubkey)
 
-        # ნაბიჯი 3: სესიის მიღება (Wallet Auth)
+        # ნაბიჯი 3: სესიის მიღება
         auth_url = f"{API_URL}/exchange/wallet_auth"
         auth_payload = {
             "challenge_token": challenge_token,
@@ -88,15 +95,14 @@ def authenticate_bot():
         trading_user_id = auth_data["trading_user_id"]
         last_auth_time = time.time()
         
-        logging.info(f"ავტორიზაცია წარმატებულია! Trading User ID: {trading_user_id}")
+        logging.info(f"ავტორიზაცია წარმატებულია! სესია მიღებულია. User ID: {trading_user_id}")
         return True
 
     except Exception as e:
-        logging.error(f"შეცდომა ავტორიზაციის პროცესში: {e}")
+        logging.error(f"შეცდომა ავტორიზაციისას: {e}")
         return False
 
 def maintain_market_maker_orders():
-    """ორმხრივი ორდერების განთავსება / განახლება"""
     global session_token
     if not session_token:
         return
@@ -107,7 +113,7 @@ def maintain_market_maker_orders():
         "Content-Type": "application/json"
     }
 
-    # მარკეტ მეიქერის საილუსტრაციო ბადი (Grid)
+    # ორდერების საილუსტრაციო ფასები (შეცვალე მიმდინარე მარკეტის ფასების მიხედვით)
     payload = {
         "user_id": trading_user_id,
         "orders": [
@@ -133,35 +139,27 @@ def maintain_market_maker_orders():
         if response.status_code == 200:
             logging.info(f"მარკეტ მეიქერის ორდერები წარმატებით განახლდა {MARKET}-ზე.")
         elif response.status_code == 401:
-            logging.warning("სესიას ვადა გაუვიდა (401). ხელახალი ავტორიზაცია...")
+            logging.warning("სესიას ვადა გაუვიდა. ხელახალი ავტორიზაცია...")
             if authenticate_bot():
-                # ხელახლა ვცდილობთ ახალი ტოკენით
                 headers["Authorization"] = f"Bearer {session_token}"
                 requests.post(url, json=payload, headers=headers)
         else:
             logging.error(f"ორდერების განთავსება ჩაიშალა: {response.text}")
     except Exception as e:
-        logging.error(f"შეცდომა ორდერების გაგზავნისას: {e}")
+        logging.error(f"შეცდომა API-სთან: {e}")
 
 def main():
-    logging.info("ბოტი ჩაირთო. იწყება პირველადი BLS ავტორიზაცია...")
-    
+    logging.info("ბოტი ჩაირთო. იწყება კორექტირებული BLS ავტორიზაცია...")
     if not authenticate_bot():
-        logging.critical("პირველადი ავტორიზაცია ვერ მოხერხდა. ბოტი მუშაობას წყვეტს.")
+        logging.critical("პირველადი ავტორიზაცია ვერ მოხერხდა. ბოტი ითიშება.")
         return
 
     while True:
         current_time = time.time()
-
-        # სესიის განახლების ციკლი ყოველ 40 წუთში (2400 წამში)
         if current_time - last_auth_time >= 2400:
-            logging.info("გავიდა 40 წუთი. ავტომატურად ვანახლებთ სესიას...")
             authenticate_bot()
 
-        # ორდერების მართვა
         maintain_market_maker_orders()
-
-        # ინტერვალი მომდევნო შემოწმებამდე (15 წამი)
         time.sleep(15)
 
 if __name__ == "__main__":
