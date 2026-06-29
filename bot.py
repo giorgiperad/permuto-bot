@@ -17,6 +17,32 @@ HEADERS = {
 
 BASE_SPREAD = 0.007
 MAX_TOTAL_EXPOSURE = 400.0
+USER_ID = None  # ავტომატურად შეივსება
+
+def get_user_identity():
+    """ ამოწმებს მიმდინარე სესიას და იღებს სავალდებულო user_id-ს """
+    global USER_ID
+    try:
+        # ჯერ ვცადოთ /exchange/session ენდპოინტი
+        r = requests.get(f"{BASE_URL}/exchange/session", headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            USER_ID = data.get("user_id") or data.get("trading_user_id") or data.get("wallet_user_id")
+            if USER_ID:
+                print(f"✅ User ID ნაპოვნია სესიიდან: {USER_ID}")
+                return USER_ID
+        
+        # ალტერნატივა: თუ სესიიდან ვერ აიღო, ვცადოთ account-იდან
+        r = requests.post(f"{BASE_URL}/exchange/account", json={}, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            USER_ID = data.get("user_id") or data.get("account", {}).get("user_id")
+            if USER_ID:
+                print(f"✅ User ID ნაპოვნია ექაუნთიდან: {USER_ID}")
+                return USER_ID
+    except Exception as e:
+        print(f"⚠️ ვერ მოხერხდა User ID-ს იდენტიფიცირება: {e}")
+    return None
 
 def get_mids():
     try:
@@ -45,6 +71,15 @@ def calculate_size(mid):
     else: return 55.0
 
 def update_grid():
+    global USER_ID
+    
+    # თუ უზერ აიდი ჯერ არ გვაქვს, ვცადოთ მისი ხელახლა აღება
+    if not USER_ID:
+        USER_ID = get_user_identity()
+        if not USER_ID:
+            print("⏳ ❌ ორდერები ვერ იგზავნება, რადგან user_id ვერ მოიძებნა. ვცდით მომდევნო ციკლზე.")
+            return
+
     current_exposure = get_account_exposure()
     if current_exposure >= MAX_TOTAL_EXPOSURE:
         print(f"⚠️ ექსპოზიციის ლიმიტი შევსებულია ({current_exposure}/{MAX_TOTAL_EXPOSURE}).")
@@ -59,7 +94,7 @@ def update_grid():
     
     for market in markets:
         mid = float(mids.get(market, 0.15))
-        if mid < 0.01: # ვოლატილობის ბაზრებისთვის მინიმალური ზღვარი შევამციროთ
+        if mid < 0.01:
             continue
 
         size = calculate_size(mid)
@@ -68,15 +103,13 @@ def update_grid():
         if mid > 0.2:
             spread = BASE_SPREAD * 0.85
 
-        # დამრგვალება მეტ ნიშნამდე (5 ნიშანი), რადგან ვოლატილობის მარკეტებზე ფასები პატარაა
         bid = round(mid * (1 - spread), 5)
         ask = round(mid * (1 + spread), 5)
 
-        # 🛑 ცვლილება: "price" და "size" გადაეცემა როგორც float რიცხვი და არა სტრინგი ("")
-        # ასევე დამატებულია "asset" ველი ყოველი შემთხვევისთვის, თუ API ითხოვს
+        # 🛑 კრიტიკული ცვლილება: ჩაშენებულია "user_id" თითოეულ ორდერში
         orders.append({
+            "user_id": USER_ID,
             "market": market,
-            "asset": market.split("-")[0], 
             "side": "buy",
             "type": "limit",
             "price": bid,
@@ -84,8 +117,8 @@ def update_grid():
             "reduce_only": False
         })
         orders.append({
+            "user_id": USER_ID,
             "market": market,
-            "asset": market.split("-")[0],
             "side": "sell",
             "type": "limit",
             "price": ask,
@@ -97,13 +130,13 @@ def update_grid():
         return
 
     try:
+        # ვაგზავნით გასწორებულ სტრუქტურას
         r = requests.post(f"{BASE_URL}/exchange/batch_upsert", json={"orders": orders}, headers=HEADERS, timeout=15)
         
         if r.status_code == 200:
             print(f"[{time.strftime('%H:%M:%S')}] ✅ Grid წარმატებით განახლდა | Exposure: {current_exposure:.1f}")
         else:
-            # თუ მაინც 422 ამოაგდო, დავბეჭდოთ სერვერის ზუსტი პასუხი, რომ გავიგოთ რა არ მოსწონს JSON-ში
-            print(f"[{time.strftime('%H:%M:%S')}] ❌ ({r.status_code}) შეცდომა! სერვერის პასუხი: {r.text}")
+            print(f"[{time.strftime('%H:%M:%S')}] ❌ ({r.status_code}) სერვერის პასუხი: {r.text}")
             
     except Exception as e:
         print(f"❌ მოთხოვნის შეცდომა: {e}")
@@ -121,7 +154,9 @@ def ws_thread():
 
 threading.Thread(target=ws_thread, daemon=True).start()
 
-print("🌟 Permuto Cup Sage Bot ვერსია 5.6 ჩაირთო!")
+print("🌟 Permuto Cup Sage Bot ვერსია 5.7 ჩაირთო!")
+# სტარტზევე ავიღოთ უზერ აიდი
+get_user_identity()
 time.sleep(2)
 
 while True:
