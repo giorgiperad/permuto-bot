@@ -1,2 +1,4 @@
-requests==2.31.0
-websocket-client==1.7.0
+websockets==12.0
+httpx==0.27.0
+blspy==2.0.2
+chia-crypto-utils==0.2.0
