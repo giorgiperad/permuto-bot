@@ -2,7 +2,7 @@ import os
 import time
 import requests
 import logging
-from chia_rs import PrivateKey
+from py_ecc.bls import G2Aug as bls
 
 # ლოგირების გამართვა Railway კონსოლისთვის
 logging.basicConfig(
@@ -14,31 +14,28 @@ API_URL = "https://perps.permuto.capital"
 MARKET = os.getenv("TRADING_MARKET", "QQQ-VOL-PERP")
 HEX_SECRET_KEY = os.getenv("BLS_SECRET_KEY")
 
-# Chia-ს ოფიციალური DST პრეფიქსი AugSchemeMPL შეტყობინებების ხელმოწერისთვის
-CHIA_AUG_SCHEME_DST = b"BLS_SIG_AUG___________"
-
 session_token = None
 trading_user_id = None
 last_auth_time = 0
 
-def get_bls_keys(secret_key_hex):
-    """საიდუმლო გასაღებიდან იღებს Chia-ს PrivateKey ობიექტს და საჯარო გასაღების თექსტს"""
-    sk_bytes = bytes.fromhex(secret_key_hex)
-    sk = PrivateKey.from_bytes(sk_bytes)
-    pk = sk.get_g1()
-    return sk, pk.to_bytes().hex()
+def get_bls_public_key():
+    """აგენერირებს 96-სიმბოლოიან საჯარო გასაღებს საიდუმლოდან"""
+    sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
+    sk = int.from_bytes(sk_bytes, "big")
+    pk = bls.SkToPk(sk)
+    return pk.hex()
 
-def sign_challenge_nonce(sk, nonce_hex, pubkey_hex):
-    """ხელს აწერს nonce-ს Chia AugSchemeMPL წესით: Sign(sk, pk + msg)"""
-    pubkey_bytes = bytes.fromhex(pubkey_hex)
+def sign_challenge_nonce(nonce_hex):
+    """
+    ხელს აწერს nonce-ს ოფიციალური G2Aug (AugSchemeMPL) წესით.
+    ეს ფუნქცია ავტომატურად ამატებს საჯარო გასაღებს შეტყობინების წინ და იყენებს სწორ Chia DST-ს.
+    """
+    sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
+    sk = int.from_bytes(sk_bytes, "big")
     msg_bytes = bytes.fromhex(nonce_hex)
     
-    # AugSchemeMPL სპეციფიკაცია: შეტყობინებას წინ ემატება საჯარო გასაღები
-    augmented_msg = pubkey_bytes + msg_bytes
-    
-    # კორექტირებული ხელმოწერა: გადაეცემა მხოლოდ DST და შეტყობინება
-    signature = sk.sign(CHIA_AUG_SCHEME_DST, augmented_msg)
-    return signature.to_bytes().hex()
+    signature = bls.Sign(sk, msg_bytes)
+    return signature.hex()
 
 def authenticate_bot():
     global session_token, trading_user_id, last_auth_time
@@ -48,7 +45,7 @@ def authenticate_bot():
         return False
 
     try:
-        sk, pubkey_hex = get_bls_keys(HEX_SECRET_KEY)
+        pubkey_hex = get_bls_public_key()
         logging.info(f"ავტორიზაციის მცდელობა საჯარო გასაღებით: {pubkey_hex[:15]}...")
 
         # ნაბიჯი 1: Challenge მოთხოვნა
@@ -68,8 +65,8 @@ def authenticate_bot():
         challenge_token = challenge_data["challenge_token"]
         nonce = challenge_data["nonce"]
 
-        # ნაბიჯი 2: სწორი ხელმოწერა ზედმეტი არგუმენტების გარეშე
-        signature = sign_challenge_nonce(sk, nonce, pubkey_hex)
+        # ნაბიჯი 2: ხელმოწერა G2Aug სქემით
+        signature = sign_challenge_nonce(nonce)
 
         # ნაბიჯი 3: სესიის ავტორიზაცია
         auth_url = f"{API_URL}/exchange/wallet_auth"
