@@ -26,7 +26,7 @@ def sign_challenge_nonce(nonce_hex, pubkey_hex):
     
     # Chia AugSchemeMPL: ხელმოწერისას გასაღებს და შეტყობინებას ვაერთებთ
     # და ვიყენებთ Sign ფუნქციას მხოლოდ 2 არგუმენტით
-    augmented_message = bytes.fromhex(pubkey_hex) + bytes.fromhex(nonce_hex)
+    augmented_message = bytes.fromhex(nonce_hex) + bytes.fromhex(pubkey_hex)
     signature = bls.Sign(sk, augmented_message) 
     return signature.hex()
 
