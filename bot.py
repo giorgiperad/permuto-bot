@@ -2,7 +2,7 @@ import os
 import time
 import requests
 import logging
-from chia_rs import PrivateKey, G1Element
+from chia_rs import PrivateKey
 
 # ლოგირების გამართვა Railway კონსოლისთვის
 logging.basicConfig(
@@ -22,21 +22,21 @@ trading_user_id = None
 last_auth_time = 0
 
 def get_bls_keys(secret_key_hex):
-    """საიდუმლო გასაღებიდან იღებს Chia-ს PrivateKey ობიექტს და G1Element საჯარო გასაღებს"""
+    """საიდუმლო გასაღებიდან იღებს Chia-ს PrivateKey ობიექტს და საჯარო გასაღების თექსტს"""
     sk_bytes = bytes.fromhex(secret_key_hex)
     sk = PrivateKey.from_bytes(sk_bytes)
-    pk = sk.get_g1()  # ეს აბრუნებს G1Element ობიექტს
-    return sk, pk
+    pk = sk.get_g1()
+    return sk, pk.to_bytes().hex()
 
-def sign_challenge_nonce(sk, nonce_hex, pk_element):
+def sign_challenge_nonce(sk, nonce_hex, pubkey_hex):
     """ხელს აწერს nonce-ს Chia AugSchemeMPL წესით: Sign(sk, pk + msg)"""
-    pubkey_bytes = pk_element.to_bytes()
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
     msg_bytes = bytes.fromhex(nonce_hex)
     
     # AugSchemeMPL სპეციფიკაცია: შეტყობინებას წინ ემატება საჯარო გასაღები
     augmented_msg = pubkey_bytes + msg_bytes
     
-    # ხელმოწერის გენერირება Chia-ს ოფიციალური DST-ით
+    # კორექტირებული ხელმოწერა: გადაეცემა მხოლოდ DST და შეტყობინება
     signature = sk.sign(CHIA_AUG_SCHEME_DST, augmented_msg)
     return signature.to_bytes().hex()
 
@@ -48,11 +48,10 @@ def authenticate_bot():
         return False
 
     try:
-        sk, pk_element = get_bls_keys(HEX_SECRET_KEY)
-        pubkey_hex = pk_element.to_bytes().hex()
+        sk, pubkey_hex = get_bls_keys(HEX_SECRET_KEY)
         logging.info(f"ავტორიზაციის მცდელობა საჯარო გასაღებით: {pubkey_hex[:15]}...")
 
-        # - ნაბიჯი 1: Challenge მოთხოვნა
+        # ნაბიჯი 1: Challenge მოთხოვნა
         challenge_url = f"{API_URL}/exchange/wallet_link_challenge"
         payload = {
             "wallet_pubkey": pubkey_hex,
@@ -69,10 +68,10 @@ def authenticate_bot():
         challenge_token = challenge_data["challenge_token"]
         nonce = challenge_data["nonce"]
 
-        # - ნაბიჯი 2: ხელმოწერა სწორი G1Element ტიპიზაციით
-        signature = sign_challenge_nonce(sk, nonce, pk_element)
+        # ნაბიჯი 2: სწორი ხელმოწერა ზედმეტი არგუმენტების გარეშე
+        signature = sign_challenge_nonce(sk, nonce, pubkey_hex)
 
-        # - ნაბიჯი 3: სესიის ავტორიზაცია
+        # ნაბიჯი 3: სესიის ავტორიზაცია
         auth_url = f"{API_URL}/exchange/wallet_auth"
         auth_payload = {
             "challenge_token": challenge_token,
@@ -107,6 +106,7 @@ def maintain_market_maker_orders():
         "Content-Type": "application/json"
     }
 
+    # სატესტო ორდერები
     payload = {
         "user_id": trading_user_id,
         "orders": [
