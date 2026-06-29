@@ -7,7 +7,7 @@ import threading
 
 BASE_URL = "https://perps.permuto.capital"
 
-# ჩასმულია შენი მოწოდებული ტოკენი
+# შენი სესიის ტოკენი
 SESSION_TOKEN = "874361ccf9c38ba6df8d9834bf740f8206cdde90fa79bf12677e40a4e9b38813"
 
 HEADERS = {
@@ -16,7 +16,7 @@ HEADERS = {
 }
 
 BASE_SPREAD = 0.007
-MAX_TOTAL_EXPOSURE = 400.0  # მაქსიმალური საერთო რისკი
+MAX_TOTAL_EXPOSURE = 400.0
 
 def get_mids():
     try:
@@ -26,7 +26,6 @@ def get_mids():
         return {}
 
 def get_account_exposure():
-    """ ამოწმებს მიმდინარე აქტიურ პოზიციებს (დოკუმენტაციით POST მოთხოვნაა) """
     try:
         r = requests.post(f"{BASE_URL}/exchange/account", json={}, headers=HEADERS, timeout=10)
         if r.status_code == 200:
@@ -36,10 +35,8 @@ def get_account_exposure():
             for pos in positions:
                 total_exposure += abs(float(pos.get("size", 0.0)))
             return total_exposure
-        elif r.status_code == 401:
-            print("🚨 401 Error: სესიის ტოკენი არასწორია ან ვადა გაუვიდა!")
-    except Exception as e:
-        print(f"Error checking exposure: {e}")
+    except:
+        pass
     return 0.0
 
 def calculate_size(mid):
@@ -50,7 +47,7 @@ def calculate_size(mid):
 def update_grid():
     current_exposure = get_account_exposure()
     if current_exposure >= MAX_TOTAL_EXPOSURE:
-        print(f"⚠️ ექსპოზიციის ლიმიტი შევსებულია ({current_exposure}/{MAX_TOTAL_EXPOSURE}). ორდერები დაბლოკილია.")
+        print(f"⚠️ ექსპოზიციის ლიმიტი შევსებულია ({current_exposure}/{MAX_TOTAL_EXPOSURE}).")
         return
 
     mids = get_mids()
@@ -62,7 +59,7 @@ def update_grid():
     
     for market in markets:
         mid = float(mids.get(market, 0.15))
-        if mid < 0.05:
+        if mid < 0.01: # ვოლატილობის ბაზრებისთვის მინიმალური ზღვარი შევამციროთ
             continue
 
         size = calculate_size(mid)
@@ -71,32 +68,49 @@ def update_grid():
         if mid > 0.2:
             spread = BASE_SPREAD * 0.85
 
-        bid = round(mid * (1 - spread), 4)
-        ask = round(mid * (1 + spread), 4)
+        # დამრგვალება მეტ ნიშნამდე (5 ნიშანი), რადგან ვოლატილობის მარკეტებზე ფასები პატარაა
+        bid = round(mid * (1 - spread), 5)
+        ask = round(mid * (1 + spread), 5)
 
-        orders.append({"market": market, "side": "buy", "type": "limit", "price": str(bid), "size": str(size)})
-        orders.append({"market": market, "side": "sell", "type": "limit", "price": str(ask), "size": str(size)})
+        # 🛑 ცვლილება: "price" და "size" გადაეცემა როგორც float რიცხვი და არა სტრინგი ("")
+        # ასევე დამატებულია "asset" ველი ყოველი შემთხვევისთვის, თუ API ითხოვს
+        orders.append({
+            "market": market,
+            "asset": market.split("-")[0], 
+            "side": "buy",
+            "type": "limit",
+            "price": bid,
+            "size": size,
+            "reduce_only": False
+        })
+        orders.append({
+            "market": market,
+            "asset": market.split("-")[0],
+            "side": "sell",
+            "type": "limit",
+            "price": ask,
+            "size": size,
+            "reduce_only": False
+        })
 
     if not orders:
         return
 
     try:
-        # იყენებს batch_upsert-ს ახალი ფასების დასასმელად
         r = requests.post(f"{BASE_URL}/exchange/batch_upsert", json={"orders": orders}, headers=HEADERS, timeout=15)
         
-        status = "✅" if r.status_code == 200 else f"❌ ({r.status_code})"
-        print(f"[{time.strftime('%H:%M:%S')}] {status} Grid განახლდა | Exposure: {current_exposure:.1f}/{MAX_TOTAL_EXPOSURE}")
+        if r.status_code == 200:
+            print(f"[{time.strftime('%H:%M:%S')}] ✅ Grid წარმატებით განახლდა | Exposure: {current_exposure:.1f}")
+        else:
+            # თუ მაინც 422 ამოაგდო, დავბეჭდოთ სერვერის ზუსტი პასუხი, რომ გავიგოთ რა არ მოსწონს JSON-ში
+            print(f"[{time.strftime('%H:%M:%S')}] ❌ ({r.status_code}) შეცდომა! სერვერის პასუხი: {r.text}")
+            
     except Exception as e:
-        print(f"❌ ორდერების გაგზავნა ჩავარდა: {e}")
+        print(f"❌ მოთხოვნის შეცდომა: {e}")
 
 def ws_thread():
     def on_message(ws, msg):
-        try:
-            data = json.loads(msg)
-            print("WS Channel Live:", data.get("channel", "unknown"))
-        except:
-            pass
-
+        pass
     while True:
         try:
             ws = websocket.WebSocketApp("wss://perps.permuto.capital/ws", on_message=on_message)
@@ -105,10 +119,9 @@ def ws_thread():
             pass
         time.sleep(5)
 
-# ფონური ვებზოკეტის ჩართვა
 threading.Thread(target=ws_thread, daemon=True).start()
 
-print("🌟 Permuto Cup Sage Bot ვერსია 5.5 წარმატებით ჩაირთო!")
+print("🌟 Permuto Cup Sage Bot ვერსია 5.6 ჩაირთო!")
 time.sleep(2)
 
 while True:
