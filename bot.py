@@ -7,9 +7,8 @@ import threading
 
 BASE_URL = "https://perps.permuto.capital"
 
-# ⚠️ აიღე ბრაუზერის დეველოპერული მენიუდან (F12) შენი ავტორიზებული სესიის ტოკენი (perps_session)
-# და ჩასვი Railway-ის Variables-ში სახელად: PERPS_SESSION_TOKEN
-SESSION_TOKEN = os.getenv("PERPS_SESSION_TOKEN", "აქ_ჩასვი_ტოკენი_თუ_ლოკალურად_ტესტავ")
+# ჩასმულია შენი მოწოდებული ტოკენი
+SESSION_TOKEN = "874361ccf9c38ba6df8d9834bf740f8206cdde90fa79bf12677e40a4e9b38813"
 
 HEADERS = {
     "Authorization": f"Bearer {SESSION_TOKEN}",
@@ -17,7 +16,7 @@ HEADERS = {
 }
 
 BASE_SPREAD = 0.007
-MAX_TOTAL_EXPOSURE = 400.0
+MAX_TOTAL_EXPOSURE = 400.0  # მაქსიმალური საერთო რისკი
 
 def get_mids():
     try:
@@ -27,7 +26,7 @@ def get_mids():
         return {}
 
 def get_account_exposure():
-    """ დოკუმენტაციით /exchange/account არის POST მოთხოვნა """
+    """ ამოწმებს მიმდინარე აქტიურ პოზიციებს (დოკუმენტაციით POST მოთხოვნაა) """
     try:
         r = requests.post(f"{BASE_URL}/exchange/account", json={}, headers=HEADERS, timeout=10)
         if r.status_code == 200:
@@ -38,9 +37,9 @@ def get_account_exposure():
                 total_exposure += abs(float(pos.get("size", 0.0)))
             return total_exposure
         elif r.status_code == 401:
-            print("🚨 სესია ექსპირებულია! განაახლეთ PERPS_SESSION_TOKEN Railway-ზე.")
+            print("🚨 401 Error: სესიის ტოკენი არასწორია ან ვადა გაუვიდა!")
     except Exception as e:
-        print(f"მოთხოვნის შეცდომა (Exposure): {e}")
+        print(f"Error checking exposure: {e}")
     return 0.0
 
 def calculate_size(mid):
@@ -49,13 +48,9 @@ def calculate_size(mid):
     else: return 55.0
 
 def update_grid():
-    if not SESSION_TOKEN or "აქ_ჩასვი" in SESSION_TOKEN:
-        print("⏳ შეცდომა: PERPS_SESSION_TOKEN არ არის დაყენებული Variables-ში!")
-        return
-
     current_exposure = get_account_exposure()
     if current_exposure >= MAX_TOTAL_EXPOSURE:
-        print(f"⚠️ ლიმიტი შევსებულია ({current_exposure}/{MAX_TOTAL_EXPOSURE}). ახალი ორდერები დაიბლოკა.")
+        print(f"⚠️ ექსპოზიციის ლიმიტი შევსებულია ({current_exposure}/{MAX_TOTAL_EXPOSURE}). ორდერები დაბლოკილია.")
         return
 
     mids = get_mids()
@@ -86,7 +81,7 @@ def update_grid():
         return
 
     try:
-        # დოკუმენტაციით /exchange/batch_upsert არის POST მოთხოვნა
+        # იყენებს batch_upsert-ს ახალი ფასების დასასმელად
         r = requests.post(f"{BASE_URL}/exchange/batch_upsert", json={"orders": orders}, headers=HEADERS, timeout=15)
         
         status = "✅" if r.status_code == 200 else f"❌ ({r.status_code})"
@@ -98,7 +93,7 @@ def ws_thread():
     def on_message(ws, msg):
         try:
             data = json.loads(msg)
-            print("WS Channel:", data.get("channel", "unknown"))
+            print("WS Channel Live:", data.get("channel", "unknown"))
         except:
             pass
 
@@ -110,10 +105,10 @@ def ws_thread():
             pass
         time.sleep(5)
 
-# ვებზოკეტის გაშვება
+# ფონური ვებზოკეტის ჩართვა
 threading.Thread(target=ws_thread, daemon=True).start()
 
-print("🌟 Permuto Cup Sage-Based Bot v5.2 ჩაირთო!")
+print("🌟 Permuto Cup Sage Bot ვერსია 5.5 წარმატებით ჩაირთო!")
 time.sleep(2)
 
 while True:
