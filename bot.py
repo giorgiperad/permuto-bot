@@ -4,7 +4,7 @@ import time
 import requests
 import logging
 
-# ლოგირების გამართვა, რომელიც მომენტალურად ბეჭდავს ტექსტს კონსოლში
+# ლოგირების გამართვა Railway კონსოლისთვის
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - [%(levelname)s] - %(message)s',
@@ -14,10 +14,11 @@ logging.basicConfig(
 logging.info("--- ბოტი წარმატებით ჩაირთო და იწყებს მუშაობას ---")
 
 try:
-    from py_ecc.bls import G2ProofOfPossession as bls
-    logging.info("py_ecc ბიბლიოთეკა წარმატებით ჩაიტვირთა.")
+    # Chia-ს ოფიციალური ბიბლიოთეკა
+    from blspy import AugSchemeMPL, PrivateKey
+    logging.info("blspy (Chia BLS) ბიბლიოთეკა წარმატებით ჩაიტვირთა.")
 except ImportError as e:
-    logging.critical(f"კრიტიკული შეცდომა ბიბლიოთეკის ჩატვირთვისას: {e}")
+    logging.critical(f"კრიტიკული შეცდომა blspy-ს ჩატვირთვისას: {e}")
     sys.exit(1)
 
 API_URL = "https://perps.permuto.capital"
@@ -29,29 +30,24 @@ trading_user_id = None
 last_auth_time = 0
 
 def get_bls_public_key():
-    """საიდუმლო გასაღებიდან საჯარო გასაღების (Hex) მიღება"""
+    """საიდუმლო გასაღებიდან ოფიციალური საჯარო გასაღების მიღება"""
     sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
-    sk = int.from_bytes(sk_bytes, "big")
-    pk = bls.SkToPk(sk)
-    return pk.hex()
+    sk = PrivateKey.from_bytes(sk_bytes)
+    pk = sk.get_g1()
+    return pk.to_bytes().hex()
 
-def sign_challenge_nonce(nonce_hex, pubkey_hex):
+def sign_challenge_nonce(nonce_hex):
     """
-    ხელს აწერს nonce-ს Chia AugSchemeMPL წესით:
-    Sign = Sign(sk, DST + pk + message)
+    ხელს აწერს nonce-ს Chia AugSchemeMPL ოფიციალური წესით.
+    ეს ფუნქცია თავად უზრუნველყოფს სწორ პრეფიქსს და ხელმოწერის ვალიდურობას.
     """
     sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
-    sk = int.from_bytes(sk_bytes, "big")
-    
-    # Chia-ს ოფიციალური AugSchemeMPL ფორმატი
-    pubkey_bytes = bytes.fromhex(pubkey_hex)
+    sk = PrivateKey.from_bytes(sk_bytes)
     msg_bytes = bytes.fromhex(nonce_hex)
     
-    # ვაერთებთ ყველაფერს ერთად: DST + PK + MSG
-    augmented_message = b"BLS_SIG_AUG___________" + pubkey_bytes + msg_bytes
-    
-    signature = bls.Sign(sk, augmented_message)
-    return signature.hex()
+    # Chia-ს ოფიციალური ხელმოწერის მეთოდი
+    signature = AugSchemeMPL.sign(sk, msg_bytes)
+    return signature.to_bytes().hex()
 
 def authenticate_bot():
     global session_token, trading_user_id, last_auth_time
@@ -79,8 +75,8 @@ def authenticate_bot():
         challenge_token = challenge_data["challenge_token"]
         nonce = challenge_data["nonce"]
 
-        # ნაბიჯი 2: ხელმოწერა
-        signature = sign_challenge_nonce(nonce, pubkey_hex)
+        # ნაბიჯი 2: ხელმოწერა ოფიციალური ბიბლიოთეკით
+        signature = sign_challenge_nonce(nonce)
 
         # ნაბიჯი 3: სესიის მიღება
         res2 = requests.post(f"{API_URL}/exchange/wallet_auth", json={
@@ -115,7 +111,6 @@ def maintain_market_maker_orders():
         "Content-Type": "application/json"
     }
 
-    # მარკეტ მეიქერის სატესტო ორდერები
     payload = {
         "user_id": trading_user_id,
         "orders": [
@@ -156,11 +151,6 @@ def main():
         return
 
     while True:
-        current_time = time.time()
-        # ყოველ 40 წუთში სესიის განახლება უსაფრთხოებისთვის
-        if current_time - last_auth_time >= 2400:
-            authenticate_bot()
-
         maintain_market_maker_orders()
         time.sleep(15)
 
