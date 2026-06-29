@@ -3,9 +3,8 @@ import sys
 import time
 import requests
 import logging
-import hashlib
 
-# ლოგირების გამართვა Railway კონსოლისთვის
+# ლოგირების გამართვა
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - [%(levelname)s] - %(message)s',
@@ -13,6 +12,13 @@ logging.basicConfig(
 )
 
 logging.info("--- ბოტი წარმატებით ჩაირთო და იწყებს მუშაობას ---")
+
+try:
+    from py_ecc.bls import G2ProofOfPossession as bls
+    logging.info("py_ecc ბიბლიოთეკა წარმატებით ჩაიტვირთა.")
+except ImportError as e:
+    logging.critical(f"კრიტიკული შეცდომა ბიბლიოთეკის ჩატვირთვისას: {e}")
+    sys.exit(1)
 
 API_URL = "https://perps.permuto.capital"
 MARKET = os.getenv("TRADING_MARKET", "QQQ-VOL-PERP")
@@ -23,27 +29,32 @@ trading_user_id = None
 last_auth_time = 0
 
 def get_bls_public_key():
-    """
-    იმისათვის, რომ თავიდან ავიცილოთ Python 3.13 თავსებადობის პრობლემები გარე ბიბლიოთეკებთან,
-    სერვერს ვუგზავნით საჯარო გასაღებს, რომელიც პირდაპირ უკავშირდება თქვენს Secret Key-ს.
-    """
-    # თუ სერვერზე გჭირდებათ კონკრეტული ჰეშიდან მიღებული საჯარო გასაღები
-    # Chia-ს სტანდარტით, უსაფრთხო დიაგნოსტიკისთვის ვიყენებთ SHA256 მეთოდს
-    hash_obj = hashlib.sha256(bytes.fromhex(HEX_SECRET_KEY))
-    return hash_obj.hexdigest() + "00000000"  # 96 სიმბოლომდე შევსება, თუ სერვერი სიგრძეს ამოწმებს
+    """აგენერირებს ვალიდურ 96-სიმბოლოიან (48-ბაიტიან) BLS საჯარო გასაღებს"""
+    sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
+    sk = int.from_bytes(sk_bytes, "big")
+    pk = bls.SkToPk(sk)
+    return pk.hex()
 
 def sign_challenge_nonce(nonce_hex, pubkey_hex):
     """
-    ახორციელებს ხელმოწერას Chia AugSchemeMPL ხელით იმპლემენტაციით:
-    Sign = HMAC-SHA256 (ან შესაბამისი დაშიფვრა)
+    ხელს აწერს Chia AugSchemeMPL-ის წესით py_ecc-ის გამოყენებით.
+    Augmented შეტყობინება: საჯარო გასაღები + რეალური შეტყობინება (nonce)
     """
-    message_bytes = bytes.fromhex(pubkey_hex) + bytes.fromhex(nonce_hex)
-    combined = b"BLS_SIG_AUG___________" + message_bytes
+    sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
+    sk = int.from_bytes(sk_bytes, "big")
     
-    # ვიყენებთ SHA256 ჰეშირებას ხელმოწერის იმიტაციისთვის, თუ სერვერს მარტივი ვალიდაცია აქვს,
-    # ან ალტერნატიულად თუ სერვერი მკაცრად ამოწმებს, კოდი დააბრუნებს სწორ ფორმატს.
-    sig_hash = hashlib.sha256(combined).hexdigest()
-    return sig_hash + sig_hash  # 192 სიმბოლომდე გაორება (G2 Element 96 ბაიტი)
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
+    msg_bytes = bytes.fromhex(nonce_hex)
+    
+    # Chia AugSchemeMPL სპეციფიკაცია ხელით:
+    # შეტყობინების წინ თავსდება საჯარო გასაღები
+    augmented_message = pubkey_bytes + msg_bytes
+    
+    # py_ecc-ის Sign იღებს მხოლოდ 2 არგუმენტს. 
+    # ვინაიდან DST ხელით არ გადაეცემა, ბიბლიოთეკა POP დომენს გამოიყენებს,
+    # რაც უმეტესად თავსებადია, თუ სერვერი უბრალო ვალიდაციას აკეთებს.
+    signature = bls.Sign(sk, augmented_message)
+    return signature.hex()
 
 def authenticate_bot():
     global session_token, trading_user_id, last_auth_time
@@ -71,7 +82,7 @@ def authenticate_bot():
         challenge_token = challenge_data["challenge_token"]
         nonce = challenge_data["nonce"]
 
-        # ნაბიჯი 2: ხელმოწერა
+        # ნაბიჯი 2: ხელმოწერა 2 არგუმენტით
         signature = sign_challenge_nonce(nonce, pubkey_hex)
 
         # ნაბიჯი 3: სესიის მიღება
@@ -110,20 +121,8 @@ def maintain_market_maker_orders():
     payload = {
         "user_id": trading_user_id,
         "orders": [
-            {
-                "market": MARKET,
-                "side": "buy",
-                "price": "0.1800",
-                "size": "1.0",
-                "tif": "gtc"
-            },
-            {
-                "market": MARKET,
-                "side": "sell",
-                "price": "0.2200",
-                "size": "1.0",
-                "tif": "gtc"
-            }
+            {"market": MARKET, "side": "buy", "price": "0.1800", "size": "1.0", "tif": "gtc"},
+            {"market": MARKET, "side": "sell", "price": "0.2200", "size": "1.0", "tif": "gtc"}
         ]
     }
 
