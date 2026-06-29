@@ -1,2 +1,2 @@
 requests==2.31.0
-chia_rs==0.35.0
+py_ecc==6.0.0
