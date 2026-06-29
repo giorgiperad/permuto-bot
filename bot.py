@@ -4,15 +4,11 @@ import requests
 import logging
 from py_ecc.bls import G2ProofOfPossession as bls
 
-# ლოგირების გამართვა
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 
 API_URL = "https://perps.permuto.capital"
 MARKET = os.getenv("TRADING_MARKET", "QQQ-VOL-PERP")
 HEX_SECRET_KEY = os.getenv("BLS_SECRET_KEY")
-
-# Chia AugSchemeMPL DST
-CHIA_DST = b"BLS_SIG_AUG___________"
 
 session_token = None
 trading_user_id = None
@@ -27,9 +23,11 @@ def get_bls_public_key():
 def sign_challenge_nonce(nonce_hex, pubkey_hex):
     sk_bytes = bytes.fromhex(HEX_SECRET_KEY)
     sk = int.from_bytes(sk_bytes, "big")
-    # Chia AugSchemeMPL: Sign = Sign(sk, pk + message)
+    
+    # Chia AugSchemeMPL: ხელმოწერისას გასაღებს და შეტყობინებას ვაერთებთ
+    # და ვიყენებთ Sign ფუნქციას მხოლოდ 2 არგუმენტით
     augmented_message = bytes.fromhex(pubkey_hex) + bytes.fromhex(nonce_hex)
-    signature = bls.Sign(sk, augmented_message, CHIA_DST)
+    signature = bls.Sign(sk, augmented_message) 
     return signature.hex()
 
 def authenticate_bot():
@@ -56,7 +54,7 @@ def authenticate_bot():
         session_token = auth_data["token"]
         trading_user_id = auth_data["trading_user_id"]
         last_auth_time = time.time()
-        logging.info("ავტორიზაცია წარმატებულია.")
+        logging.info(f"ავტორიზაცია წარმატებულია. User ID: {trading_user_id}")
         return True
     except Exception as e:
         logging.error(f"ავტორიზაციის შეცდომა: {e}")
