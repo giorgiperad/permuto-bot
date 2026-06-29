@@ -1,1 +1,2 @@
 requests==2.31.0
+py_ecc==6.0.0
